@@ -329,7 +329,143 @@ server.tool(
   }
 );
 
-// 5. List Users
+// 5. Find Calls by Company
+server.tool(
+  "find-calls-by-company",
+  "Find all Gong calls associated with a specific company/account. Matches by: (1) CRM account/opportunity associations from Salesforce/HubSpot linked to the call, (2) participant email domains, (3) participant affiliations and names, (4) call title/brief mention. This is the best tool for finding all calls with a specific customer.",
+  {
+    fromDateTime: z
+      .string()
+      .describe("Start date-time in ISO 8601 format (e.g. 2025-09-01T00:00:00Z)"),
+    toDateTime: z
+      .string()
+      .describe("End date-time in ISO 8601 format (e.g. 2026-03-08T23:59:59Z)"),
+    companyName: z
+      .string()
+      .describe("Company name to search for (e.g. 'Recorded Future', 'Acme Corp'). Case-insensitive, matches partial names."),
+    companyDomain: z
+      .string()
+      .optional()
+      .describe("Company email domain for more accurate matching (e.g. 'recordedfuture.com'). If provided, also matches participant email domains."),
+    maxRecords: z
+      .number()
+      .optional()
+      .describe("Maximum number of matching calls to return (default: all)"),
+  },
+  async ({ fromDateTime, toDateTime, companyName, companyDomain, maxRecords }) => {
+    try {
+      const nameLower = companyName.toLowerCase().trim();
+      const domainLower = companyDomain?.toLowerCase().trim();
+
+      const allCalls = await gongPaginatedRequest(
+        "/v2/calls/extensive",
+        {
+          filter: { fromDateTime, toDateTime },
+          contentSelector: {
+            context: "Extended",
+            exposedFields: {
+              parties: true,
+              content: {
+                brief: true,
+                topics: true,
+              },
+            },
+          },
+        },
+        "calls"
+      );
+
+      const matches = (allCalls as Array<Record<string, unknown>>).filter((call) => {
+        // 1. Check call-level CRM context (Account/Opportunity associations)
+        const callContext = call.context as Array<{ system?: string; objects?: Array<{ objectType?: string; objectId?: string; fields?: Array<{ name?: string; value?: string }> }> }> | undefined;
+        for (const ctx of callContext ?? []) {
+          for (const obj of ctx.objects ?? []) {
+            for (const field of obj.fields ?? []) {
+              if (field.value && field.value.toLowerCase().includes(nameLower)) return true;
+            }
+          }
+        }
+
+        const parties = call.parties as Array<{ name?: string; emailAddress?: string; title?: string; affiliation?: string; context?: Array<{ system?: string; objects?: Array<{ objectType?: string; objectId?: string; fields?: Array<{ name?: string; value?: string }> }> }> }> | undefined;
+
+        for (const party of parties ?? []) {
+          // 2. Check party-level CRM context (Contact → Account links)
+          for (const ctx of party.context ?? []) {
+            for (const obj of ctx.objects ?? []) {
+              for (const field of obj.fields ?? []) {
+                if (field.value && field.value.toLowerCase().includes(nameLower)) return true;
+              }
+            }
+          }
+
+          // 3. Check email domain
+          if (domainLower && party.emailAddress) {
+            const emailDomain = party.emailAddress.toLowerCase().split("@")[1];
+            if (emailDomain === domainLower) return true;
+          }
+
+          // 4. Check affiliation and name
+          if (party.affiliation && party.affiliation.toLowerCase().includes(nameLower)) return true;
+          if (party.name && party.name.toLowerCase().includes(nameLower)) return true;
+        }
+
+        // 5. Fallback: check title and brief
+        const meta = call.metaData as Record<string, unknown> | undefined;
+        const content = call.content as Record<string, unknown> | undefined;
+        const title = ((meta?.title as string) ?? "").toLowerCase();
+        const brief = ((content?.brief as string) ?? "").toLowerCase();
+        if (title.includes(nameLower) || brief.includes(nameLower)) return true;
+
+        return false;
+      });
+
+      const limited = maxRecords ? matches.slice(0, maxRecords) : matches;
+
+      const summary = limited.map((call) => {
+        const meta = call.metaData as Record<string, unknown>;
+        const parties = call.parties as Array<Record<string, unknown>>;
+        const content = call.content as Record<string, unknown> | undefined;
+        const callContext = call.context as Array<{ system?: string; objects?: Array<{ objectType?: string; objectId?: string; fields?: Array<{ name?: string; value?: string }> }> }> | undefined;
+
+        return {
+          id: meta?.id,
+          title: meta?.title,
+          started: meta?.started,
+          duration: meta?.duration,
+          url: meta?.url,
+          brief: content?.brief ?? "",
+          topics: ((content?.topics as Array<{ name?: string }>) ?? []).map(t => t.name).filter(Boolean),
+          attendees: parties?.map((p) => ({
+            name: p.name,
+            email: p.emailAddress,
+            title: p.title,
+            affiliation: p.affiliation,
+          })),
+          crmContext: (callContext ?? []).flatMap(ctx =>
+            (ctx.objects ?? []).map(obj => ({
+              system: ctx.system ?? "",
+              objectType: obj.objectType ?? "",
+              objectId: obj.objectId ?? "",
+              fields: Object.fromEntries((obj.fields ?? []).map(f => [f.name ?? "", f.value ?? ""])),
+            }))
+          ),
+        };
+      });
+
+      return textResult({
+        companyName,
+        companyDomain: companyDomain ?? null,
+        totalMatches: matches.length,
+        returned: summary.length,
+        calls: summary,
+      });
+    } catch (err) {
+      return errorResult(err);
+    }
+  }
+);
+
+// 6. List Users
 server.tool(
   "list-users",
   "List all Gong users in the account. Useful for mapping user IDs to names and emails.",
