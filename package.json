@@ -1,0 +1,33 @@
+{
+  "name": "gong-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for Gong - search calls, get transcripts, attendees, next steps and more",
+  "type": "module",
+  "bin": {
+    "gong-mcp": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc && chmod +x dist/index.js",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "gong",
+    "model-context-protocol",
+    "ai",
+    "calls",
+    "transcripts"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.5",
+    "typescript": "^5.7.0"
+  }
+}
