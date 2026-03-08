@@ -20,7 +20,7 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
   "mcpServers": {
     "gong": {
       "command": "npx",
-      "args": ["-y", "gong-mcp@latest"],
+      "args": ["-y", "@bgrgndzz/gong-mcp@latest"],
       "env": {
         "GONG_ACCESS_KEY": "your-access-key",
         "GONG_ACCESS_KEY_SECRET": "your-access-key-secret"
