@@ -93,6 +93,51 @@ function errorResult(err: unknown) {
   };
 }
 
+// --- Company Matching ---
+function callMatchesCompany(call: Record<string, unknown>, nameLower: string, domainLower?: string): boolean {
+  // 1. Check call-level CRM context (Account/Opportunity associations)
+  const callContext = call.context as Array<{ system?: string; objects?: Array<{ objectType?: string; objectId?: string; fields?: Array<{ name?: string; value?: string }> }> }> | undefined;
+  for (const ctx of callContext ?? []) {
+    for (const obj of ctx.objects ?? []) {
+      for (const field of obj.fields ?? []) {
+        if (field.value && String(field.value).toLowerCase().includes(nameLower)) return true;
+      }
+    }
+  }
+
+  const parties = call.parties as Array<{ name?: string; emailAddress?: string; title?: string; affiliation?: string; context?: Array<{ system?: string; objects?: Array<{ objectType?: string; objectId?: string; fields?: Array<{ name?: string; value?: string }> }> }> }> | undefined;
+
+  for (const party of parties ?? []) {
+    // 2. Check party-level CRM context (Contact → Account links)
+    for (const ctx of party.context ?? []) {
+      for (const obj of ctx.objects ?? []) {
+        for (const field of obj.fields ?? []) {
+          if (field.value && String(field.value).toLowerCase().includes(nameLower)) return true;
+        }
+      }
+    }
+
+    // 3. Check email domain
+    if (domainLower && party.emailAddress) {
+      const emailDomain = party.emailAddress.toLowerCase().split("@")[1];
+      if (emailDomain === domainLower) return true;
+    }
+
+    // 4. Check affiliation and name
+    if (party.affiliation && party.affiliation.toLowerCase().includes(nameLower)) return true;
+    if (party.name && party.name.toLowerCase().includes(nameLower)) return true;
+  }
+
+  // 5. Fallback: check title and brief
+  const meta = call.metaData as Record<string, unknown> | undefined;
+  const content = call.content as Record<string, unknown> | undefined;
+  const title = ((meta?.title as string) ?? "").toLowerCase();
+  const brief = ((content?.brief as string) ?? "").toLowerCase();
+  if (title.includes(nameLower) || brief.includes(nameLower)) return true;
+
+  return false;
+}
+
 // --- Server Setup ---
 const server = new McpServer({
   name: "gong-mcp",
@@ -356,10 +401,16 @@ server.tool(
     try {
       const nameLower = companyName.toLowerCase().trim();
       const domainLower = companyDomain?.toLowerCase().trim();
+      const matchLimit = maxRecords ?? 50;
 
-      const allCalls = await gongPaginatedRequest(
-        "/v2/calls/extensive",
-        {
+      // Paginate manually to allow early termination once we have enough matches
+      const matches: Array<Record<string, unknown>> = [];
+      let cursor: string | undefined;
+      let totalScanned = 0;
+      const MAX_SCAN = 2000; // Safety cap: don't scan more than 2000 calls
+
+      do {
+        const requestBody: Record<string, unknown> = {
           filter: { fromDateTime, toDateTime },
           contentSelector: {
             context: "Extended",
@@ -371,61 +422,28 @@ server.tool(
               },
             },
           },
-        },
-        "calls"
-      );
+        };
+        if (cursor) requestBody.cursor = cursor;
 
-      const matches = (allCalls as Array<Record<string, unknown>>).filter((call) => {
-        // 1. Check call-level CRM context (Account/Opportunity associations)
-        const callContext = call.context as Array<{ system?: string; objects?: Array<{ objectType?: string; objectId?: string; fields?: Array<{ name?: string; value?: string }> }> }> | undefined;
-        for (const ctx of callContext ?? []) {
-          for (const obj of ctx.objects ?? []) {
-            for (const field of obj.fields ?? []) {
-              if (field.value && String(field.value).toLowerCase().includes(nameLower)) return true;
-            }
+        const data = await gongRequest("/v2/calls/extensive", { body: requestBody });
+        const pageCalls = (data as { calls?: Array<Record<string, unknown>> }).calls ?? [];
+        totalScanned += pageCalls.length;
+
+        for (const call of pageCalls) {
+          if (callMatchesCompany(call, nameLower, domainLower)) {
+            matches.push(call);
+            if (matches.length >= matchLimit) break;
           }
         }
 
-        const parties = call.parties as Array<{ name?: string; emailAddress?: string; title?: string; affiliation?: string; context?: Array<{ system?: string; objects?: Array<{ objectType?: string; objectId?: string; fields?: Array<{ name?: string; value?: string }> }> }> }> | undefined;
+        cursor = (data as { records?: { cursor?: string } }).records?.cursor;
+      } while (cursor && matches.length < matchLimit && totalScanned < MAX_SCAN);
 
-        for (const party of parties ?? []) {
-          // 2. Check party-level CRM context (Contact → Account links)
-          for (const ctx of party.context ?? []) {
-            for (const obj of ctx.objects ?? []) {
-              for (const field of obj.fields ?? []) {
-                if (field.value && String(field.value).toLowerCase().includes(nameLower)) return true;
-              }
-            }
-          }
-
-          // 3. Check email domain
-          if (domainLower && party.emailAddress) {
-            const emailDomain = party.emailAddress.toLowerCase().split("@")[1];
-            if (emailDomain === domainLower) return true;
-          }
-
-          // 4. Check affiliation and name
-          if (party.affiliation && party.affiliation.toLowerCase().includes(nameLower)) return true;
-          if (party.name && party.name.toLowerCase().includes(nameLower)) return true;
-        }
-
-        // 5. Fallback: check title and brief
-        const meta = call.metaData as Record<string, unknown> | undefined;
-        const content = call.content as Record<string, unknown> | undefined;
-        const title = ((meta?.title as string) ?? "").toLowerCase();
-        const brief = ((content?.brief as string) ?? "").toLowerCase();
-        if (title.includes(nameLower) || brief.includes(nameLower)) return true;
-
-        return false;
-      });
-
-      const limited = maxRecords ? matches.slice(0, maxRecords) : matches;
-
-      const summary = limited.map((call) => {
+      const summary = matches.map((call) => {
         const meta = call.metaData as Record<string, unknown>;
         const parties = call.parties as Array<Record<string, unknown>>;
         const content = call.content as Record<string, unknown> | undefined;
-        const callContext = call.context as Array<{ system?: string; objects?: Array<{ objectType?: string; objectId?: string; fields?: Array<{ name?: string; value?: string }> }> }> | undefined;
+        const callCtx = call.context as Array<{ system?: string; objects?: Array<{ objectType?: string; objectId?: string; fields?: Array<{ name?: string; value?: string }> }> }> | undefined;
 
         return {
           id: meta?.id,
@@ -441,9 +459,9 @@ server.tool(
             title: p.title,
             affiliation: p.affiliation,
           })),
-          crmContext: (callContext ?? []).flatMap(ctx =>
-            (ctx.objects ?? []).map(obj => ({
-              system: ctx.system ?? "",
+          crmContext: (callCtx ?? []).flatMap(c =>
+            (c.objects ?? []).map(obj => ({
+              system: c.system ?? "",
               objectType: obj.objectType ?? "",
               objectId: obj.objectId ?? "",
               fields: Object.fromEntries((obj.fields ?? []).map(f => [f.name ?? "", f.value ?? ""])),
@@ -456,7 +474,7 @@ server.tool(
         companyName,
         companyDomain: companyDomain ?? null,
         totalMatches: matches.length,
-        returned: summary.length,
+        totalScanned,
         calls: summary,
       });
     } catch (err) {
