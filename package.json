@@ -1,6 +1,6 @@
 {
   "name": "@bgrgndzz/gong-mcp",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "MCP server for Gong - search calls, get transcripts, attendees, next steps and more",
   "type": "module",
   "bin": {
