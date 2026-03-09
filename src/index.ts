@@ -381,7 +381,7 @@ server.tool(
         for (const ctx of callContext ?? []) {
           for (const obj of ctx.objects ?? []) {
             for (const field of obj.fields ?? []) {
-              if (field.value && field.value.toLowerCase().includes(nameLower)) return true;
+              if (field.value && String(field.value).toLowerCase().includes(nameLower)) return true;
             }
           }
         }
@@ -393,7 +393,7 @@ server.tool(
           for (const ctx of party.context ?? []) {
             for (const obj of ctx.objects ?? []) {
               for (const field of obj.fields ?? []) {
-                if (field.value && field.value.toLowerCase().includes(nameLower)) return true;
+                if (field.value && String(field.value).toLowerCase().includes(nameLower)) return true;
               }
             }
           }
